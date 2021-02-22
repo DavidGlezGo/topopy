@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ # -*- coding: utf-8 -*-
 
 # network.py
 # Jose Vicente Perez Pena
@@ -19,7 +19,7 @@ from skimage import graph
 from scipy.sparse import csc_matrix
 from . import Grid, PRaster, DEM
 
-class Flow(PRaster):
+class Flow(Grid):
     
     def __init__(self, dem="", auxtopo=False, filled=False, raw_z=True, verbose=False, verb_func=print):
         """
@@ -52,19 +52,16 @@ class Flow(PRaster):
         MATLAB-based software for topographic analysis and modeling in Earth 
         surface sciences. Earth Surf. Dyn. 2, 1–7. https://doi.org/10.5194/esurf-2-1-2014
         """
+
         
         if dem == "":
+            # Elements inherited from Grid.__init__
+            super().__init__(dem)
             # Creates an empty Flow object
-            self._size = (1, 1)
-            self._dims = (1, 1)
-            self._geot = (0., 1., 0., 0., 0., -1.)
-            self._cellsize = (self._geot[1], self._geot[5])
-            self._proj = ""
-            self._ncells = 1
-            self._nodata_pos = np.array([], dtype=np.int32)
-            self._ix = np.array([], dtype=np.uint32)
-            self._ixc = np.array([], dtype=np.uint32)
-            self._zx = np.array([], dtype=np.uint32)
+            self._nodata_pos = np.array([], np.int32)
+            self._ix = np.array([], np.uint32)
+            self._ixc = np.array([], np.uint32)
+            self._zx = np.array([], np.uint32)
         
         elif type(dem) == str:
             # Loads the Flow object in GeoTiff format
@@ -74,14 +71,16 @@ class Flow(PRaster):
                 #raise FlowError("Error opening the Geotiff")
         else:
             try:
+                # Elements inherited from Grid.__init__
+                #super().__init__(dem)
                 # Set Network properties
                 self._size = dem.get_size()
-                self._dims = dem.get_dims()
                 self._geot = dem.get_geotransform()
                 self._cellsize = dem.get_cellsize()
                 self._proj = dem.get_projection()
                 self._ncells = dem.get_ncells()
-                self._nodata_pos = np.ravel_multi_index(dem.get_nodata_pos(), self._dims)            
+                # Set Network properties
+                self._nodata_pos = np.ravel_multi_index(dem.get_nodata_pos(), self._size[::-1])            
                 # Get topologically sorted nodes (ix - givers, ixc - receivers)
                 self._ix, self._ixc = sort_pixels(dem, auxtopo=auxtopo, filled=filled, verbose=verbose, verb_func=verb_func)
                 if raw_z:
@@ -111,7 +110,7 @@ class Flow(PRaster):
         """
 
         driver = gdal.GetDriverByName("GTiff")
-        raster = driver.Create(path, self._dims[1], self._dims[0], 3, gdal.GDT_UInt32)
+        raster = driver.Create(path, self._size[0], self._size[1], 3, gdal.GDT_UInt32)
         raster.SetGeoTransform(self._geot)
         raster.SetProjection(self._proj)
 
@@ -120,9 +119,9 @@ class Flow(PRaster):
         ix = np.append(self._ix, miss_cells).astype(np.uint32)
         ixc = np.append(self._ixc, miss_cells).astype(np.uint32)
         zx = np.append(self._zx * 1000, miss_cells).astype(np.uint32)
-        ix = ix.reshape(self._dims)
-        ixc = ixc.reshape(self._dims)
-        zx = zx.reshape(self._dims)
+        ix = ix.reshape(self._size[::-1])
+        ixc = ixc.reshape(self._size[::-1])
+        zx = zx.reshape(self._size[::-1])
 
         raster.GetRasterBand(1).WriteArray(ix)
         raster.GetRasterBand(2).WriteArray(ixc)
@@ -139,19 +138,13 @@ class Flow(PRaster):
         path : *str* 
           Path for the Flow geotiff.
         """
-        raster = gdal.Open(path)
-
-        # Set Network properties        
-        self._size = (raster.RasterXSize, raster.RasterYSize)
-        self._dims = (raster.RasterYSize, raster.RasterXSize)
-        self._geot = raster.GetGeoTransform()
-        self._cellsize = (self._geot[1], self._geot[5])
-        self._proj = raster.GetProjection()
-        self._ncells = raster.RasterYSize * raster.RasterXSize
-
+        # Elements inherited from Grid.__init__
+        super().__init__(path)
+        
         # Load ix, ixc, zx
-        banda = raster.GetRasterBand(1)
-        no_cells = banda.GetNoDataValue()
+        raster = self._raster
+        banda = self._banda
+        no_cells = self._nodata
         arr = banda.ReadAsArray().astype(np.uint32)
         self._ix = arr.ravel()[0:int(self._ncells - no_cells)]
         banda = raster.GetRasterBand(2)
@@ -196,22 +189,40 @@ class Flow(PRaster):
         method to solve the stream power equation governing fluvial incision and landscape 
         evolution. Geomorphology 180–181, 170–179. 
         """
-        if weights:
-            facc = weights.read_array()
-        else:
-            facc = np.ones(self._ncells, np.uint32)
         
+        if weights:
+            if self._geot == weights._geot and self._size == weights._size:
+                facc = weights.read_array().ravel().astype(np.float)
+
+                
+            elif weights.is_inside(self.get_extent()[0],self.get_extent()[2]) and weights.is_inside(self.get_extent()[1],self.get_extent()[3]):
+                ix_ixc = np.append(self._ix,self._ixc)
+                ix_ixc = np.array(list(set(ix_ixc)), np.uint32)
+                facc = np.zeros(self._ncells, np.uint32)
+                for n in ix_ixc:
+                    row, col = self.ind_2_cell(n)
+                    x, y = self.cell_2_xy(row, col)
+                    Wcell = weights.xy_2_cell(x, y)
+                    value = weights.get_value(Wcell[0], Wcell[1])
+                    facc[n] = value
+            else:
+                raise FlowError("ERROR. DEM is not within the Weight Grid! ")
+        
+        else:
+            print(0)
+            facc = np.ones(self._ncells, np.uint32)
+            
         nix = len(self._ix)
         for n in range(nix):
             facc[self._ixc[n]] += facc[self._ix[n]]
         
-        facc = facc.reshape(self._dims)
+        facc = facc.reshape(self._size[::-1])
         if nodata:
-            nodata_val = np.iinfo(np.uint32).max
+            nodata_val = np.iinfo(np.uint64).max
         else:
             nodata_val = 0
         
-        row, col = np.unravel_index(self._nodata_pos, self._dims)
+        row, col = np.unravel_index(self._nodata_pos, self._size[::-1])
         facc[row, col] = nodata_val
         
         # Get the output in form of a Grid object
@@ -253,11 +264,6 @@ class Flow(PRaster):
         MATLAB-based software for topographic analysis and modeling in Earth 
         surface sciences. Earth Surf. Dyn. 2, 1–7. https://doi.org/10.5194/esurf-2-1-2014
         """
-        # Check input parameters
-        if kind not in ['heads', 'confluences', 'outlets']:
-            kind = 'heads'
-        if coords not in ['CELL', 'XY', 'IND']:
-            coords = 'CELL'
         
         # Get drainage network using the given threshold
         fac = self.get_flow_accumulation(nodata=False, asgrid=False)
@@ -277,11 +283,7 @@ class Flow(PRaster):
         sp_arr = csc_matrix((aux_vals, (ix, ixc)), shape=(self._ncells, self._ncells))
         
         # Get stream POI according the selected type
-        if kind == 'heads':
-            # Heads will be channel cells marked only as givers (ix) but not as receivers (ixc) 
-            sum_arr = np.asarray(np.sum(sp_arr, 0)).ravel()
-            out_pos = (sum_arr == 0) & w
-        elif kind == 'confluences':
+        if kind == 'confluences':
             # Confluences will be channel cells with two or givers
             sum_arr = np.asarray(np.sum(sp_arr, 0)).ravel()
             out_pos = sum_arr > 1
@@ -289,18 +291,21 @@ class Flow(PRaster):
             # Outlets will be channel cells marked only as receivers (ixc) but not as givers (ix) 
             sum_arr = np.asarray(np.sum(sp_arr, 1)).ravel()
             out_pos = np.logical_and((sum_arr == 0), w)  
+        else:
+            # Heads will be channel cells marked only as givers (ix) but not as receivers (ixc) 
+            sum_arr = np.asarray(np.sum(sp_arr, 0)).ravel()
+            out_pos = (sum_arr == 0) & w
             
-        out_pos = out_pos.reshape(self._dims)
+        out_pos = out_pos.reshape(self._size[::-1])
         row, col = np.where(out_pos)
         
-        if coords=="CELL":
-            return np.array((row, col)).T
-        elif coords=="XY":
+        if coords=="XY":
             xi, yi = self.cell_2_xy(row, col)
             return np.array((xi, yi)).T
         elif coords=="IND":
             return self.cell_2_ind(row, col)
-
+        else:
+            return np.array((row, col)).T
 
     def get_drainage_basins(self, outlets=None, min_area = 0.005, asgrid=True):
         """
@@ -346,7 +351,7 @@ class Flow(PRaster):
         # Sino especificamos outlets pero si área mínima, extraemos outlets con ese area mínima
         if outlets is None and min_area > 0:
             threshold = int(self._ncells * min_area)
-            inds = self.get_stream_poi(threshold, kind="outlets", coords="IND")
+            inds = self.get_stream_poi(threshold, "outlets", "IND")
             basin_ids = np.arange(inds.size) + 1
         elif isinstance(outlets, np.ndarray):
             if not np.all(self.is_inside(outlets[:,0], outlets[:,1])):
@@ -406,7 +411,7 @@ class Flow(PRaster):
                     basin_arr[temp_ix[n]] = basin_arr[temp_ixc[n]]
         
         # Reshape and return
-        basin_arr = basin_arr.reshape(self._dims)  
+        basin_arr = basin_arr.reshape(self._size[::-1])  
         
         if asgrid:
             return self._create_output_grid(basin_arr, 0)
@@ -431,9 +436,7 @@ class Flow(PRaster):
         numpy.ndarray
           Numpy ndarray with two columns [xi, yi] with the snap points
         """
-        if kind not in  ['channel', 'heads', 'confluences', 'outlets']:
-            kind = 'channel'
-        
+
         # Extract a numpy array with the coordinate to snap the points
         if kind in ['heads', 'confluences', 'outlets']:
             poi = self.get_stream_poi(threshold, kind, "XY")         

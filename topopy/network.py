@@ -10,7 +10,7 @@
 # Version: 1.1
 # October 1th, 2018
 #
-# Last modified 07 february 2021
+# Last modified 28 march, 2020 (COVID19 quarantine)
 
 import numpy as np
 import os
@@ -42,23 +42,10 @@ class Network(PRaster):
       m/n coeficient to calculate chi values in each channel cell    
     npoints : *int*
       Number of points to calculate slope and ksn in each cell. Slope and ksn values
-      are cc
+      are calculated with a moving window of (npoints * 2 + 1) cells.
     """
-    def __init__(self, flow=None, threshold=0, thetaref=0.45, npoints=5, gradients=False):
+    def __init__(self, flow=None, threshold=0, thetaref=0.45, npoints=5, gradients=True):
 
-        # The Network object has the following properties:
-        # ._ix >> Giver cells
-        # ._ixc >> Receivers cells
-        # ._ax >> Upstream draining area (in pixel units)
-        # ._dx >> Distance to mouth (distance from pixel to nearest outlet)
-        # ._zx >> Elevation
-        # ._chi >> Chi index
-        # ._slp >> Slope of the pixel, calculated by regression with a moving window of {npoints * 2 + 1} cells.
-        # ._ksn >> Ksn index of the pixel, calculated by regression with a moving window of {npoints * 2 + 1} cells.
-        # ._r2slp >> R2 Coeficient of the slope regression
-        # ._r2ksn >> R2 Coeficient of the ksn regression
-        # ._dd >> Giver (ix) - Receiver (ixc) distance
-        
         # If flow is a str, load it
         if type(flow)== str:
             self._load(flow)
@@ -86,7 +73,7 @@ class Network(PRaster):
         self._ixc = flow._ixc[I]
         
         # Get Area and Elevations for channel cells
-        self._ax = fac.ravel()[self._ix] # Area in CELLS units!!
+        self._ax = fac.ravel()[self._ix] * self._cellsize[0] * self._cellsize[1] * -1 # Area in map units
         self._zx = flow._zx[I]
         
         # Get distances to mouth (self._dx) and giver-receiver distances (self._dd)
@@ -120,43 +107,35 @@ class Network(PRaster):
 
     def save(self, path):
         """
-        Saves the Network instance to disk. It will be saved as a numpy array in text format with a header.
-        The first three lines will have the information of the raster:
-            Line1::   xsize; ysize; cx; cy; ULx; ULy; Tx; Tyy
-            Line2::   thetaref; threshold; slp_np; ksn_np
-            Line3::   String with the projection (WKT format)
-        xsize, ysize >> Dimensions of the raster
-        cx, cy >> Cellsizes in X and Y
-        Tx, Ty >> Rotation factors (for geotransformation matrix)
-        ULx, ULy >> X and Y coordinates of the corner of the upper left pixel of the raster
-        thetaref >>  m/n coeficient to calculate chi values in each channel cell
-        threshold >> Number the cells to initiate a channel
-        slp_np, ksn_np >> Number of points to calculate ksn and slope by regression. Window of {npoints * 2 + 1}
+        Saves the Network instance to disk. It will be saved as a numpy array in text format.
+        The first three rows will have the information of the raster
         
         Parameters:
         ===========
         path : *str*
-          Path to save the network object with *.dat extension (it is not necessary to  give the extension)
+          Path to save the network object, with *.net extension
         """
     
-        # In case the extension is wrong or path has not extension
-        path = os.path.splitext(path)[0] + ".dat"
+        path = os.path.splitext(path)[0]
+            
+        # Create *.net file with properties
+        netfile = open(path + ".net", "w")
+        params = [self._size, self._cellsize, self._ncells, self._ksn_npoints, 
+                  self._slp_npoints, self._thetaref, self._threshold] 
+        linea = ";".join([str(param) for param in params]) + "\n"
+        netfile.write(linea)
+        linea = ";".join([str(elem) for elem in self._geot]) + "\n"
+        netfile.write(linea)
+        netfile.write(str(self._proj))
+        netfile.close()
         
-        # Create header with properties
-        params = [self._size[0], self._size[1], self._geot[1], self._geot[5], 
-                  self._geot[0], self._geot[3], self._geot[2], self._geot[4]]
-        header = ";".join([str(param) for param in params]) + "\n"  
-        params = [self._thetaref, self._threshold, self._slp_npoints, self._ksn_npoints]
-        header += ";".join([str(param) for param in params]) + "\n" 
-        header += str(self._proj)
-
         # Create data array
         data_arr = np.array((self._ix, self._ixc, self._ax, self._dx, self._zx,
                              self._chi, self._slp, self._ksn, self._r2slp, 
                              self._r2ksn, self._dd)).T
         
         # Save the network instance as numpy.ndarray in text format
-        np.savetxt(path, data_arr, delimiter=";", header=header, encoding="utf8", comments="#")
+        np.save(path + ".npy", data_arr)
     
     def _load(self, path):
         """
@@ -166,34 +145,28 @@ class Network(PRaster):
         ==========
            Path to the saved network object
         """
-        # Open the file as normal text file to get its properties
-        fr = open(path, "r")
-        # Line 1: First and last characters will be "#" and "\n"
-        linea = fr.readline()[1:-1]
+        # Get properties from properties file *.net
+        netfile = path
+        fr = open(netfile, "r")
+        linea = fr.readline()[:-1]
         data = linea.split(";")
-        self._size = (int(data[0]), int(data[1]))
-        self._dims = (int(data[1]), int(data[0]))
-        self._cellsize = (float(data[2]), float(data[3]))
-        self._ncells = self._size[0] * self._size[1]
-        self._geot = (float(data[4]), float(data[2]), float(data[6]), 
-                      float(data[5]), float(data[7]), float(data[3]))       
-        # Line2: First and last characters will be "#" and "\n"
-        linea = fr.readline()[1:-1]
-        data = linea.split(";")
-        self._thetaref = float(data[0])
-        self._threshold = int(data[1])
-        self._slp_npoints = int(data[2])
+        self._size = (int(data[0].split(",")[0][1:]), int(data[0].split(",")[1][:-1]))
+        self._dims = (self._size[1], self._size[0])
+        self._cellsize = (float(data[1].split(",")[0][1:]), float(data[1].split(",")[1][:-1]))
+        self._ncells = int(data[2])
         self._ksn_npoints = int(data[3])
-        # Line3: First and last characters will be "#" and "\n"
-        linea = fr.readline()[1:-1]
+        self._slp_npoints = int(data[4])
+        self._thetaref = float(data[5])
+        self._threshold = int(data[6])
+        linea = fr.readline()[:-1]
+        self._geot = tuple([float(n) for n in linea.split(";")])
+        linea = fr.readline()
         self._proj = linea
         fr.close()
         
-        # Load array data
-        data_arr = np.loadtxt(path, dtype=float, comments='#', delimiter=";", encoding="utf8")
-        # Fix to avoid errors in networks with only one cell...
-        if data_arr.ndim < 2:
-            data_arr = data_arr.reshape((1, data_arr.size))
+        # Load array data from the auxiliar array file *.npy
+        arrfile = os.path.splitext(netfile)[0] + ".npy"
+        data_arr = np.load(arrfile)
         self._ix = data_arr[:, 0].astype(np.int)
         self._ixc = data_arr[:, 1].astype(np.int)
         self._ax = data_arr[:, 2]
@@ -222,7 +195,25 @@ class Network(PRaster):
             chi[self._ix[n]] = chi[self._ixc[n]] + (a0 * self._dd[n]/self._ax[n]**thetaref)            
         self._chi = chi[self._ix]
         self._thetaref = thetaref
-      
+        
+    def polynomial_fit(self, x, y):
+        '''Calculate gradient and R2''' 
+       
+        # Calculate slope of central cell by regression 
+        poli, SCR = np.polyfit(x, y, deg = 1, full = True)[:2]
+        # Calculate gradient
+        g = poli[0]
+        if g == 0: 
+            g = 0.000001
+    
+        # Calculate R2 
+        if y.size * y.var() == 0:
+            R2 = 1 # Puntos colineares
+        else:
+            R2 = float(1 - SCR/(y.size * y.var()))
+    
+        return (g, R2)     
+
     def calculate_gradients(self, npoints, kind='slp'):
         """
         This function calculates gradients (slope or ksn) for all channel cells. 
@@ -237,17 +228,16 @@ class Network(PRaster):
           
         kind : *str* {'slp', 'ksn'}
         """
-        if kind not in ['slp', 'ksn']:
-            kind = 'slp'
+
         winlen = npoints * 2 + 1
         
         # Get arrays depending on type
-        if kind == 'slp':
-            x_arr = self._dx
-            y_arr = self._zx
-        elif kind == 'ksn':
+        y_arr = self._zx
+        
+        if kind == 'ksn':
             x_arr = self._chi
-            y_arr = self._zx
+        else:
+            x_arr = self._dx
             
         # Get ixcix auxiliar array
         ixcix = np.zeros(self._ncells, np.int)
@@ -262,68 +252,53 @@ class Network(PRaster):
         spos = np.argsort(-elev)
         heads = heads[spos]
         
+
+        
         # Prepare auxiliary arrays
         gi = np.zeros(self._ncells)
         r2 = np.zeros(self._ncells)
         
-        # Taking sequentally all the heads and compute downstream flow
+        # Taking sequentially all the heads and compute downstream flow
         for head in heads:
             processing = True
             head_cell = head
             mid_cell = self._ixc[ixcix[head_cell]]
             mouth_cell = self._ixc[ixcix[mid_cell]]
         
-            if ixcix[mid_cell] == 0:
-                # Channel type 2 (mid_cell is an outlet)
+            if ixcix[mid_cell] == 0 or gi[mid_cell] != 0:
+                # Channel type 2 (mid_cell is an outlet) or mid_call is already calculated
                 continue
+            
             elif ixcix[mouth_cell]== 0:
                 # Channel type 3 (mouth_cell is an outlet)
                 processing = False
-            # Check si cabecera es una confluencia de solo dos celdas
-            elif gi[mid_cell] != 0:
-                processing = False
-            
-            # Obtenemos datos de elevacion y distancias
-            win = [mouth_cell, mid_cell, head_cell]
-            xi = x_arr[ixcix[win]]
-            yi = y_arr[ixcix[win]]
-           
-            # Calculamos pendiente de celda central por regresion
-            poli, SCR = np.polyfit(xi, yi, deg = 1, full = True)[:2]
-            g = poli[0]
-            if g == 0: 
-                g = 0.000001
-        
-            # Calculamos gradient y R2
-            if yi.size * yi.var() == 0:
-                R2 = 1 # Puntos colineares
-            else:
-                R2 = float(1 - SCR/(yi.size * yi.var()))
-        
-            gi[mid_cell] = g
-            r2[mid_cell] = R2
+                # Calculate mid_cell's gradient and R2
+                win = [mouth_cell, mid_cell, head_cell]
+                xi = x_arr[ixcix[win]]
+                yi = y_arr[ixcix[win]]
+                g, R2 = self.polynomial_fit(xi,yi)
+                
+                gi[mid_cell] = g
+                r2[mid_cell] = R2
                     
             while processing:
                 # Verificamos si estamos al final (en un outlet)  
-                if not ixcix[mouth_cell]==0:
+                if ixcix[mouth_cell]!=0:
                     # Si mouth_cell no es un outlet, cogemos siguiente celda
                     next_cell = self._ixc[ixcix[mouth_cell]]
-                    # Si la siguiente celda es el final, 
-                    # añadimos una celda y eliminamos la cabecera
-                    if ixcix[next_cell]==0:
-                        win.insert(0, next_cell)
-                        win.pop()
+
                     # Si longitud de ventana < winlen, se añaden dos celdas 
-                    elif len(win) < winlen:
+                    if len(win) < winlen:
                         win.insert(0, next_cell)
                         aux_cell = self._ixc[ixcix[next_cell]]
                         win.insert(0, aux_cell)
+                    # Si la siguiente celda es el final, 
+                    # añadimos una celda y eliminamos la cabecera
                     else:
                         win.insert(0, next_cell)
-                        win.pop() 
+                        win.pop()
                 else:
                     # Si mouth_cell es un outlet, no se coge siguiente celda
-                    next_cell = mouth_cell
                     win.pop()
                     win.pop()
                 
@@ -337,15 +312,7 @@ class Network(PRaster):
                 # Obtenemos datos de elevacion y distancias para calcular pendientes
                 xi = x_arr[ixcix[win]]
                 yi = y_arr[ixcix[win]]
-                poli, SCR = np.polyfit(xi, yi, deg = 1, full = True)[:2]
-                g = poli[0]
-                if g == 0: 
-                    g = 0.000001
-                
-                if yi.size * yi.var() == 0:
-                    R2 = 1
-                else:
-                    R2 = float(1 - SCR/(yi.size * yi.var()))
+                g, R2 = self.polynomial_fit(xi,yi)
                             
                 # Comprobamos si celda central ha sido procesada
                 if gi[mid_cell] == 0:
@@ -374,7 +341,8 @@ class Network(PRaster):
             self._ksn = gi[self._ix]
             self._r2ksn = r2[self._ix]
             self._ksn_npoints = npoints
-        
+    
+
     def get_stream_poi(self, kind="heads", coords="CELL"):
             """
             This function finds points of interest of the drainage network. These points of interest
@@ -404,11 +372,6 @@ class Network(PRaster):
             MATLAB-based software for topographic analysis and modeling in Earth 
             surface sciences. Earth Surf. Dyn. 2, 1–7. https://doi.org/10.5194/esurf-2-1-2014
             """
-            # Check input parameters
-            if kind not in ['heads', 'confluences', 'outlets']:
-                kind = 'heads'
-            if coords not in ['CELL', 'XY', 'IND']:
-                coords = 'CELL'
 
             # Get grid channel cells
             w = np.zeros(self._ncells, dtype=np.bool)
@@ -420,11 +383,7 @@ class Network(PRaster):
             sp_arr = csc_matrix((aux_vals, (self._ix, self._ixc)), shape=(self._ncells, self._ncells))
             
             # Get stream POI according the selected type
-            if kind == 'heads':
-                # Heads will be channel cells marked only as givers (ix) but not as receivers (ixc) 
-                sum_arr = np.asarray(np.sum(sp_arr, 0)).ravel()
-                out_pos = (sum_arr == 0) & w
-            elif kind == 'confluences':
+            if kind == 'confluences':
                 # Confluences will be channel cells with two or givers
                 sum_arr = np.asarray(np.sum(sp_arr, 0)).ravel()
                 out_pos = sum_arr > 1
@@ -432,17 +391,21 @@ class Network(PRaster):
                 # Outlets will be channel cells marked only as receivers (ixc) but not as givers (ix) 
                 sum_arr = np.asarray(np.sum(sp_arr, 1)).ravel()
                 out_pos = np.logical_and((sum_arr == 0), w)  
+            else:
+                # Heads will be channel cells marked only as givers (ix) but not as receivers (ixc) 
+                sum_arr = np.asarray(np.sum(sp_arr, 0)).ravel()
+                out_pos = (sum_arr == 0) & w
                 
             out_pos = out_pos.reshape(self._dims)
             row, col = np.where(out_pos)
             
-            if coords=="CELL":
-                return np.array((row, col)).T
-            elif coords=="XY":
+            if coords=="XY":
                 xi, yi = self.cell_2_xy(row, col)
                 return np.array((xi, yi)).T
             elif coords=="IND":
                 return self.cell_2_ind(row, col)
+            else:
+                return np.array((row, col)).T
 
     def snap_points(self, input_points, kind="channel"):
         """
@@ -460,8 +423,6 @@ class Network(PRaster):
         numpy.ndarray
           Numpy ndarray with two columns [xi, yi] with the snap points
         """
-        if kind not in  ['channel', 'heads', 'confluences', 'outlets']:
-            kind = 'channel'
         
         # Extract a numpy array with the coordinate to snap the points
         if kind in ['heads', 'confluences', 'outlets']:
@@ -604,152 +565,123 @@ class Network(PRaster):
           If False, channels will split in each confluence (segmented channels). If True, 
           they will split only when order changes (continuous channels).
         """
+        # Create shapefile
+        driver = ogr.GetDriverByName("ESRI Shapefile")
+        dataset = driver.CreateDataSource(path)
+        sp = osr.SpatialReference()
+        sp.ImportFromWkt(self._proj)
+        layer = dataset.CreateLayer("rivers", sp, ogr.wkbLineString)
+        layer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
+        
+        # Get ixcix auxiliar array
+        ixcix = np.zeros(self._ncells, np.int)
+        ixcix[self._ix] = np.arange(self._ix.size)
+        
         if con:
-            self._get_continuous_shp(path)
-        else:
-            self._get_segmented_shp(path)
-    
-    def _get_segmented_shp(self, path=""):
-        """
-        Export Network channels to shapefile format. Channels will split in each confluence.
-        
-        path : str
-          Path to save the shapefile 
-        """
-        # Create shapefile
-        driver = ogr.GetDriverByName("ESRI Shapefile")
-        dataset = driver.CreateDataSource(path)
-        sp = osr.SpatialReference()
-        sp.ImportFromWkt(self._proj)
-        layer = dataset.CreateLayer("rivers", sp, ogr.wkbLineString)
-        layer.CreateField(ogr.FieldDefn("segid", ogr.OFTInteger))
-        layer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
-        layer.CreateField(ogr.FieldDefn("flowto", ogr.OFTInteger))
-        
-        # Get channel segments and orders
-        ch_seg = self.get_stream_segments(False).ravel()
-        ch_ord = self.get_stream_orders(asgrid=False).ravel()
-        ch_seg = ch_seg[self._ix]
-        ch_ord = ch_ord[self._ix]
-        
-        # Get ixcix auxiliar array
-        ixcix = np.zeros(self._ncells, np.int)
-        ixcix[self._ix] = np.arange(self._ix.size)
-        
-        seg_ids = np.unique(ch_seg)
-        for idx in seg_ids:
-            # skip zero channel (no channel)
-            if idx == 0:
-                continue   
-            # Get givers for the segment id
-            pos = np.where(ch_seg == idx)[0]
-            ch_ix = self._ix[pos]
+
+            # Get heads, confluences and orders
+            heads = self.get_stream_poi("heads", "IND")
+            confs = self.get_stream_poi("confluences", "IND")
+            ch_ord = self.get_stream_orders(asgrid=False).ravel()
             
-            # Add last point
-            first = ch_ix[0]
-            last = self._ixc[ixcix[ch_ix[-1]]]
-            ch_ix = np.append(ch_ix, last)
-            first = ch_ix[0]
+            # Get confluences where strahler index increases
+            strahler_confs = []
+            for conf in confs:
+                conf_order = ch_ord[conf]
+                givers = self._ix[np.where(self._ixc==conf)]
+                giv_orders = ch_ord[givers]
+                if giv_orders.max() < conf_order:
+                    strahler_confs.append(conf)
+                    
+            # Append strahler confluences to heads
+            heads = np.append(heads, np.array(strahler_confs))    
             
-            # Get segment order and receiver segment
-            order = ch_ord[ixcix[first]]
-            if ixcix[last] == 0:
-                flowto = idx
-            else:
-                flowto = ch_seg[ixcix[last]]
-            
-            # Add feature
-            feat = ogr.Feature(layer.GetLayerDefn())
-            feat.SetField("segid", int(idx))
-            feat.SetField("order", int(order))
-            feat.SetField("flowto", int(flowto))
-            row, col = self.ind_2_cell(ch_ix)
-            xi, yi = self.cell_2_xy(row, col)
-            
-            geom = ogr.Geometry(ogr.wkbLineString)
-            
-            for n in range(xi.size):
-                geom.AddPoint(xi[n], yi[n])
-                
-            feat.SetGeometry(geom)
-            layer.CreateFeature(feat)
-           
-        layer = None
-        dataset = None
-    
-    
-    def _get_continuous_shp(self, path=""):
-        """
-        Export Network channels to shapefile format. Channels will split only when order changes.
-        
-        path : str
-          Path to save the shapefile 
-        """
-        # Create shapefile
-        driver = ogr.GetDriverByName("ESRI Shapefile")
-        dataset = driver.CreateDataSource(path)
-        sp = osr.SpatialReference()
-        sp.ImportFromWkt(self._proj)
-        layer = dataset.CreateLayer("rivers", sp, ogr.wkbLineString)
-        layer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
-        
-        # Get ixcix auxiliar array
-        ixcix = np.zeros(self._ncells, np.int)
-        ixcix[self._ix] = np.arange(self._ix.size)
-        
-        # Get heads, confluences, outlets and orders
-        heads = self.get_stream_poi("heads", "IND")
-        confs = self.get_stream_poi("confluences", "IND")
-        ch_ord = self.get_stream_orders(asgrid=False).ravel()
-        
-        # Get confluences where strahler index increases
-        strahler_confs = []
-        for conf in confs:
-            conf_order = ch_ord[conf]
-            givers = self._ix[np.where(self._ixc==conf)]
-            giv_orders = ch_ord[givers]
-            if giv_orders.max() < conf_order:
-                strahler_confs.append(conf)
-                
-        # Append strahler confluences to heads
-        heads = np.append(heads, np.array(strahler_confs))
-        
-        # Iterate heads
-        for head in heads:
-            cell = head
-            river_data = [cell]
-            processing = True
-            while processing:
-                next_cell = self._ixc[ixcix[cell]]
-                river_data.append(next_cell)               
-                if ixcix[next_cell] == 0:
-                    processing = False
-                elif next_cell in confs:
-                    if ch_ord[next_cell] > ch_ord[cell]:
+            # Iterate heads
+            for head in heads:
+                cell = head
+                river_data = [cell]
+                processing = True
+                while processing:
+                    next_cell = self._ixc[ixcix[cell]]
+                    river_data.append(next_cell)
+                    if next_cell in confs:
+                        if ch_ord[next_cell] > ch_ord[cell]:
+                            processing = False
+                        else:
+                            river_data.append(next_cell)
+                            cell = next_cell
+                    elif ixcix[next_cell] == 0:
                         processing = False
                     else:
                         river_data.append(next_cell)
-                        cell = next_cell
-                else:
-                    river_data.append(next_cell)
-                    cell = next_cell    
-                            
-            # Add feature
-            feat = ogr.Feature(layer.GetLayerDefn())
-            row, col = self.ind_2_cell(river_data)
-            xi, yi = self.cell_2_xy(row, col)
-            geom = ogr.Geometry(ogr.wkbLineString)
-            for n in range(xi.size):
-                geom.AddPoint(xi[n], yi[n])
+                        cell = next_cell    
+                                
+                # Add feature
+                feat = ogr.Feature(layer.GetLayerDefn())
+                row, col = self.ind_2_cell(river_data)
+                xi, yi = self.cell_2_xy(row, col)
+                geom = ogr.Geometry(ogr.wkbLineString)
+                for n in range(xi.size):
+                    geom.AddPoint(xi[n], yi[n])
+                    
+                feat.SetGeometry(geom)
+                chanorder = ch_ord[cell]
+                feat.SetField("order", int(chanorder))
+                layer.CreateFeature(feat)
+               
+
+        else:
+
+            layer.CreateField(ogr.FieldDefn("segid", ogr.OFTInteger))
+            layer.CreateField(ogr.FieldDefn("flowto", ogr.OFTInteger))
+            
+            # Get channel segments and orders
+            ch_seg = self.get_stream_segments(False).ravel()
+            ch_ord = self.get_stream_orders(asgrid=False).ravel()
+            ch_seg = ch_seg[self._ix]
+            ch_ord = ch_ord[self._ix]
+            
+            seg_ids = np.unique(ch_seg)
+            for idx in seg_ids:
+                # skip zero channel (no channel)
+                if idx == 0:
+                    continue   
+                # Get givers for the segment id
+                pos = np.where(ch_seg == idx)[0]
+                ch_ix = self._ix[pos]
                 
-            feat.SetGeometry(geom)
-            chanorder = ch_ord[cell]
-            feat.SetField("order", int(chanorder))
-            layer.CreateFeature(feat)
-           
+                # Add last point
+                first = ch_ix[0]
+                last = self._ixc[ixcix[ch_ix[-1]]]
+                ch_ix = np.append(ch_ix, last)
+                first = ch_ix[0]
+                
+                # Get segment order and receiver segment
+                order = ch_ord[ixcix[first]]
+                if ixcix[last] == 0:
+                    flowto = idx
+                else:
+                    flowto = ch_seg[ixcix[last]]
+                
+                # Add feature
+                feat = ogr.Feature(layer.GetLayerDefn())
+                feat.SetField("segid", int(idx))
+                feat.SetField("order", int(order))
+                feat.SetField("flowto", int(flowto))
+                row, col = self.ind_2_cell(ch_ix)
+                xi, yi = self.cell_2_xy(row, col)
+                
+                geom = ogr.Geometry(ogr.wkbLineString)
+                
+                for n in range(xi.size):
+                    geom.AddPoint(xi[n], yi[n])
+                    
+                feat.SetGeometry(geom)
+                layer.CreateFeature(feat)
+               
         layer = None
         dataset = None
-
+    
     def _create_output_grid(self, array, nodata_value=None):
         """
         Convenience function that creates a Grid object from an input array. The array
@@ -779,14 +711,23 @@ class Network(PRaster):
         This method export network data to a shapelife. It calculates segments of a given
         distance and calculate chi, ksn, slope, etc. for the segment. The shapefile will 
         have the following fields:
-            id_profile : Profile identifier. Profiles are calculated from heads until outlets or  
+            
+            id_profile : Profile identifier. Profiles are calculated from heads until outlets or
+            
             L : Lenght from the middle point of the segment to the profile head
-            area_e6 : Drainage area in the segment mouth (divided by E6, to avoide large numbers) 
+            
+            area_e6 : Drainage area in the segment mouth (divided by E6, to avoide large numbers)
+            
             z : Elevation of the middle point of the segment
-            chi : Mean chi of the segment 
+            
+            chi : Mean chi of the segment
+            
             ksn : Ksn of the segment (calculated by linear regression)
+            
             slope : slope of the segment (calculated by linear regression)
+            
             rksn : R2 of the ksn linear regression
+            
             rslope : R2 of the slope linear regression
             
         Parameters:
@@ -916,13 +857,13 @@ class BNetwork(Network):
     """
     Class to manipulate cells from a drainage network from a single basin network. 
     This class inhereits all methods and properties of the Network class plus some 
-    new methods to manipulate channels
+    new methods to manipulate the drainage network and the trunk channel. 
     
     Parameters:
     -----------
     net : *topopy.Network* | *str*
       Network instance or path to a previously saved BNetwork file
-    basingrid : *topopy.Basin* | *topopy.Grid*
+    basingrid : *numpy.ndarray* | *topopy.Grid*
       Numpy array or topopy Grid representing the drainage basin. If array or Grid have more than
       one basin, set the basinid properly. 
     heads : *list* or *numpy.ndarray*
@@ -1011,27 +952,24 @@ class BNetwork(Network):
                         pos = np.argsort(heads[:, 2])
                         heads = heads[pos]
                     
-                    # Get heads inside the basin (taking into account nodata)
-                    heads = heads[basingrid.is_inside(heads[:,0], heads[:,1], True)]
-                    
                     # Snap heads to network heads
-                    heads = self.snap_points(heads, "heads")                   
-
-                    # Get indexes
-                    row, col = basingrid.xy_2_cell(heads[:,0], heads[:,1])
-                    idx = self.cell_2_ind(row, col)
+                    heads = net.snap_points(heads, "heads")                   
                     
-                    # Remove duplicate heads if any
-                    aux, pos = np.unique(idx, return_index=True)
-                    pos.sort()
-                    self._heads = idx[pos]
+                    # Get heads inside the basin (taking into account nodata)
+                    heads = heads[basingrid.is_inside(heads[:,0], heads[:,1])]
+                    row, col = basingrid.xy_2_cell(heads[:,0], heads[:,1])
+                    pos = np.where(basin[row, col] > 0)
+                    heads = heads[pos]
+                    row, col = self.xy_2_cell(heads[:,0], heads[:,1])
+                    self._heads = self.cell_2_ind(row, col)
+                    self._heads = np.unique(self._heads)
                     
                 if self._heads.size == 0:
                     heads = self.get_stream_poi("heads", "IND")
                     ixcix = np.zeros(self._ncells, np.int)
                     ixcix[self._ix] = np.arange(self._ix.size)
                     pos = np.argsort(-self._zx[ixcix[heads]])
-                    self._heads = heads[pos][0] #Take only the first (highest) head
+                    self._heads = heads[pos][0:1] #Take only the first (highest) head
             
             except:
                 raise NetworkError("Unexpected Error creating the BNetwork object")
@@ -1048,62 +986,33 @@ class BNetwork(Network):
         # Call to the parent Network._load() function
         super()._load(path)
         
-        # Open again the *.dat file to get the heads
+        # Open again the *.net file to get the heads
         fr = open(path, "r")
-        for n in range(3):
-            fr.readline()
-        head_line = fr.readline()
-        if  head_line[0] == "#":
-            self._heads = np.array(head_line[1:-1].split(";")).astype(np.int)
-        # If the file hasn't got a four line in the header (with the heads) is not a BNetwork file
-        else:
-            raise NetworkError("The selected file is not a BNetwork objetct")
+        lineas = fr.readlines()
+        self._heads = np.array(lineas[3].split(";")).astype(np.int)
+        fr.close()
 #        except:
 #            raise NetworkError("Error loading the BNetwork object")
             
     def save(self, path):
         """
-        Saves the Network instance to disk. It will be saved as a numpy array in text format with a header.
-        The first three lines will have the information of the raster:
-            Line1::   xsize; ysize; cx; cy; ULx; ULy; Tx; Tyy
-            Line2::   thetaref; threshold; slp_np; ksn_np
-            Line3::   String with the projection (WKT format)
-            Line4::   head_1, head_2, ..., head_n
-        xsize, ysize >> Dimensions of the raster
-        cx, cy >> Cellsizes in X and Y
-        Tx, Ty >> Rotation factors (for geotransformation matrix)
-        ULx, ULy >> X and Y coordinates of the corner of the upper left pixel of the raster
-        thetaref >>  m/n coeficient to calculate chi values in each channel cell
-        threshold >> Number the cells to initiate a channel
-        slp_np, ksn_np >> Number of points to calculate ksn and slope by regression. Window of {npoints * 2 + 1}
+        Saves the BNetwork instance to disk. It will be saved as text file (*.net) plus
+        a numpy binary array with the same name (*.npy) with the cell data.
         
         Parameters:
         ===========
         path : *str*
-          Path to save the network object with *.dat extension (it is not necessary to  give the extension)
+          Path to save the network object, with *.net extension
         """
-    
-        # In case the extension is wrong or path has not extension
-        path = os.path.splitext(path)[0] + ".dat"
+        # Call to the parent Network.save() function
+        super().save(path)
         
-        # Create header with properties
-        params = [self._size[0], self._size[1], self._geot[1], self._geot[5], 
-                  self._geot[0], self._geot[3], self._geot[2], self._geot[4]]
-        header = ";".join([str(param) for param in params]) + "\n"  
-        params = [self._thetaref, self._threshold, self._slp_npoints, self._ksn_npoints]
-        header += ";".join([str(param) for param in params]) + "\n" 
-        header += str(self._proj) + "\n"
-        params = [str(head) for head in self._heads]
-        header += ";".join([str(param) for param in params])
-        
-        # Create data array
-        data_arr = np.array((self._ix, self._ixc, self._ax, self._dx, self._zx,
-                             self._chi, self._slp, self._ksn, self._r2slp, 
-                             self._r2ksn, self._dd)).T
-        
-        # Save the network instance as numpy.ndarray in text format
-        np.savetxt(path, data_arr, delimiter=";", header=header, encoding="utf8", comments="#")
-    
+        # Open again the *.net file to append the heads
+        netfile = open(os.path.splitext(path)[0] + ".net", "a")
+        heads = ";".join(self._heads.astype(np.str))
+        netfile.write("\n" + heads)
+        netfile.close()
+
     def chi_plot(self, ax=None):
         """
         This function plot the Chi-elevation graphic for all the channels of the basin. 

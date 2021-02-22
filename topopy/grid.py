@@ -35,13 +35,14 @@ class PRaster():
     def __init__(self, path=""):
         
         if path:
-            raster = gdal.Open(path)
+            self._raster = gdal.Open(path)
+            raster = self._raster
             if not raster:
                 raise FileNotFoundError
             
-            banda = raster.GetRasterBand(1)
+            self._banda = raster.GetRasterBand(1)
+            banda = self._banda
             self._size = (banda.XSize, banda.YSize)
-            self._dims = (banda.YSize, banda.XSize)
             self._geot = raster.GetGeoTransform()
             self._cellsize = (self._geot[1], self._geot[5])
             self._proj = raster.GetProjection()
@@ -49,7 +50,6 @@ class PRaster():
         
         else:
             self._size = (1, 1)
-            self._dims = (1, 1)
             self._geot = (0., 1., 0., 0., 0., -1.)
             self._cellsize = (self._geot[1], self._geot[5])
             self._proj = ""
@@ -65,7 +65,7 @@ class PRaster():
         """
         Return a tuple with the size of the internal array (nrow, ncol)
         """
-        return self._dims
+        return self._size[::-1]
     
     def get_ncells(self):
         """
@@ -91,30 +91,25 @@ class PRaster():
         *(ULx, Cx, Tx, ULy, Ty, Cy)*
         
         * ULx = Upper-Left X coordinate (upper-left corner of the pixel)
-        * ULy = Upper-Left Y coordinate (upper-left corner of the pixel)
         * Cx = X Cellsize
-        * Cy = Y Cellsize (negative value)
         * Tx = Rotation in X axis
+        * ULy = Upper-Left Y coordinate (upper-left corner of the pixel)
         * Ty = Rotation in Y axis
+        * Cy = Y Cellsize (negative value)
         """
         return self._geot
     
-    def is_inside(self, x, y):
+    def is_inside(self, x, y, coords="XY"):
         """
-        Check if points are inside the rectangular extent of the rasterr
-        
-        Parameters:
-        ===========
-        x, y : coordinates (number, list, or numpy.ndarray)
-        
-        Returns:
-        ========
-        bool / bool array, indicating True (inside) or False (outside)
+        Check if one point is inside the raster (rectangular extent)
         """
+        if coords == "XY":
+            row, col = self.xy_2_cell(x, y)
+        else:
+            row, col = x, y
         
-        row, col = self.xy_2_cell(x, y)
-        rowinside = np.logical_and(row >= 0, row < self._dims[0])
-        colinside = np.logical_and(col >= 0, col < self._dims[1])
+        rowinside = np.logical_and(row >= 0, row < self._size[1])
+        colinside = np.logical_and(col >= 0, col < self._size[0])
         inside = np.logical_and(rowinside, colinside)
         return inside
     
@@ -139,7 +134,6 @@ class PRaster():
           PRaster instance from which parameters will be copied
         """
         self._size = grid.get_size()
-        self._dims = grid.get_dims()
         self._geot = grid.get_geotransform()
         self._cellsize = grid.get_cellsize()
         self._proj = grid.get_projection()
@@ -196,7 +190,7 @@ class PRaster():
         =======
         **tuple** : Tuple with (row, col) indices as numpy.ndarrays
         """
-        return np.unravel_index(ind, self._dims) 
+        return np.unravel_index(ind, self._size[::-1]) 
     
     def cell_2_ind(self, row, col):
         """
@@ -211,7 +205,7 @@ class PRaster():
         =======
         **numpy.array** : Array with linear indexes (row-major, C-style)
         """
-        return np.ravel_multi_index((row, col), self._dims)
+        return np.ravel_multi_index((row, col), self._size[::-1])
     
     
 class Grid(PRaster):
@@ -227,32 +221,17 @@ class Grid(PRaster):
         band : int
           Raster band to be open (usually don't need to be modified)
         """
-        
-        if path:
-            raster = gdal.Open(path)
-            if not raster:
-                raise FileNotFoundError
-                        
-            banda = raster.GetRasterBand(1)
-            self._size = (banda.XSize, banda.YSize)
-            self._dims = (banda.YSize, banda.XSize)
-            self._geot = raster.GetGeoTransform()
-            self._cellsize = (self._geot[1], self._geot[5])
-            self._proj = raster.GetProjection()
-            self._ncells = banda.XSize * banda.YSize
-            # New elements of Grid
+        # Elements inherited from PRaster.__init__
+        super().__init__(path)       
+
+        # New elements of Grid        
+        if path: 
+            banda = self._banda
             self._nodata = banda.GetNoDataValue()
             self._array = banda.ReadAsArray()
             self._tipo = str(self._array.dtype)
                   
         else:
-            self._size = (1, 1)
-            self._dims = (1, 1)
-            self._geot = (0., 1., 0., 0., 0., -1.)
-            self._cellsize = (self._geot[1], self._geot[5])
-            self._proj = ""
-            self._ncells = 1
-            # New elements of Grid
             self._nodata = None
             self._array = np.array([[0]], dtype=np.float)
             self._tipo = str(self._array.dtype)
@@ -270,12 +249,11 @@ class Grid(PRaster):
         """
         # If the Grid is an empty Grid, any array is valid
         if self._size == (1, 1):       
-            self._dims = array.shape
-            self._size = (array.shape[1], array.shape[0])    
+            self._size = (array.shape[::-1])    
             self._array = np.copy(array)
             self._tipo = str(self._array.dtype)
         # If the Grid is not an empty Grid, input array shape must coincide with internal array
-        elif array.shape == self._dims:    
+        elif array.shape == self._size[::-1]:    
             self._array = np.copy(array)
             self._tipo = str(self._array.dtype)
         else:
@@ -372,7 +350,7 @@ class Grid(PRaster):
             
     def get_nodata_pos(self):
         """
-        Return the positions of the NoData values as a tuple of two arrays (rows, columns)
+        Return the position of the NoData values as a tuple of two arrays (rows, columns)
         """
         if self._nodata is None:
             return (np.array([], dtype=np.int), np.array([], dtype=np.int))
@@ -429,32 +407,6 @@ class Grid(PRaster):
         else:
             plt.imshow(arr)
     
-    def is_inside(self, x, y, NoData=True):
-        """
-        Check if points are inside the rasterr
-        
-        Parameters:
-        ===========
-        x, y : coordinates (number, list, or numpy.ndarray)
-        NoData : Flag to set if NoData are considered (If NoData == True > Points in NoData are outside)
-        
-        Returns:
-        ========
-        bool / bool array, indicating True (inside) or False (outside)
-        """
-        inside = super().is_inside(x, y)
-
-        if NoData:
-            pos = np.where(inside)
-            x = x[inside]
-            y = y[inside]
-            row, col = self.xy_2_cell(x, y)
-            in_nodata = self.get_value(row, col) != self.get_nodata()
-            inside[pos] = in_nodata
-        
-        return inside
-        
-    
     def save(self, path):
         """
         Saves the grid in the disk
@@ -486,8 +438,8 @@ class DEM(Grid):
     
     def __init__(self, path="", band=1):
         
-        # Call to Grid.__init__ method
-        super(DEM, self).__init__(path=path, band=band)
+        # Elements inherited from Grid.__init__
+        super().__init__(path, band)
         # Change NoData values to -9999.
         self.set_nodata(-9999.)
         
@@ -528,8 +480,9 @@ class DEM(Grid):
         z_arr = np.copy(self._array)
         
         # Change nodata to very low values
+        #nodata_ids = self._nodata
         nodata_ids = self.get_nodata_pos()
-        z_arr[nodata_ids] = -9999
+        #z_arr[nodata_ids] = -9999
         
         footprint = np.ones((3, 3), dtype=np.int8)
         # Identify flats throught a image binary erosion
@@ -537,14 +490,11 @@ class DEM(Grid):
         flats = ndimage.morphology.grey_erosion(z_arr, footprint=footprint) == z_arr
         
         # Remove flats from the borders
-        flats[:,0] = False
-        flats[:,-1] = False
-        flats[0,:] = False
-        flats[-1,:] = False
+        flats[0,:] = flats[-1,:] = flats[:,0] = flats[:,-1] = False
         
         # Remove flats for nodata values and cells bordering them
         flats[nodata_ids] = False
-        auxmat = np.zeros(flats.shape, dtype="bool")
+        auxmat = np.zeros(flats.shape, bool)
         auxmat[nodata_ids] = True
         nodata_bord = ndimage.morphology.grey_dilation(auxmat, footprint=footprint)
         flats[nodata_bord] = False
@@ -566,7 +516,7 @@ class DEM(Grid):
                 grid = Grid()
                 grid.copy_layout(self)
                 grid.set_nodata(-1)
-                grid._tipo = 'int8'
+                grid._tipo = 'int8'                                                                
                 grid.set_array(arr.astype(np.int8))
                 
                 if nodata:
@@ -594,9 +544,9 @@ class DEM(Grid):
 
         # Fill the DEM        
         nodata_pos = self.get_nodata_pos()
-        filled = reconstruction(seed, self._array, method='erosion')
-        filled = filled.astype(self._array.dtype)
-        filled[nodata_pos] = self._nodata
+        filled = reconstruction(seed, self._array, 'erosion')
+        #filled = filled.astype(self._array.dtype)
+        #filled[nodata_pos] = self._nodata
         
         if as_array:
             # Return filled DEM as numpy.ndarray
@@ -639,7 +589,7 @@ class DEM(Grid):
         # Change nan values to a very low value
         copyarr = np.copy(self._array)
         nodata_pos = self.get_nodata_pos()
-        copyarr[nodata_pos] = -9999.
+
         
         # Set h_max to a value larger than the array maximum to ensure
         #   that the while loop will terminate
@@ -647,9 +597,7 @@ class DEM(Grid):
     
         # Build mask of cells with data not on the edge of the image
         # Use 3x3 square Structuring element
-        inside_mask = ndimage.morphology.binary_erosion(
-            np.isfinite(copyarr),
-            structure=np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]]).astype(np.bool))
+        inside_mask = ndimage.morphology.binary_erosion(np.isfinite(copyarr),np.ones((3,3), bool))
     
         # Initialize output array as max value test_array except edges
         output_array = np.copy(copyarr)
@@ -661,16 +609,14 @@ class DEM(Grid):
     
         # Cross structuring element
         if four_way:
-            el = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]]).astype(np.bool)
+            el = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], bool)
         else:
-            el = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]]).astype(np.bool)
+            el = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]], bool)
     
         # Iterate until marker array doesn't change
         while not np.array_equal(output_old_array, output_array):
             output_old_array = np.copy(output_array)
-            output_array = np.maximum(
-                copyarr,
-                ndimage.grey_erosion(output_array, size=(3, 3), footprint=el))
+            output_array = np.maximum(copyarr, ndimage.grey_erosion(output_array, size=(3, 3), footprint=el))
 
         # Put back nodata values and change type
         if self._nodata:
@@ -701,10 +647,8 @@ class Basin(DEM):
         """
         # If basin is None, the DEM is already a basin and we load it
         if basin is None:
-            # Call to DEM.__init__ method
-            super(Basin, self).__init__(path=dem, band=1)
-            # Change NoData values to -9999.
-            self.set_nodata(-9999.)
+            # Elements inherited from DEM.__init__
+            super().__init__(dem)
             return
         elif type(basin) is str:
             basingrid = Grid(basin)           
@@ -729,7 +673,6 @@ class Basin(DEM):
 
         # Create Grid
         self._size = (basin_cl.shape[1], basin_cl.shape[0])
-        self._dims = (basin_cl.shape[0], basin_cl.shape[1])
         geot = dem._geot
         ULx = geot[0] + geot[1] * c1
         ULy = geot[3] + geot[5] * r1
